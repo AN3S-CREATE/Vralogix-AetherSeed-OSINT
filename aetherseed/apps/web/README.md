@@ -16,17 +16,22 @@ Set `AETHERSEED_API_URL` if the API is not on `http://localhost:8000`.
 
 ## 2. Next.js 15 + React Flow (production)
 
-Recommended for graph-heavy interactive investigation. Suggested stack:
+A working app lives in [`frontend/`](frontend/) — Next.js 15 (App Router) +
+React 19 + React Flow + TanStack Query + Tailwind.
 
-- Next.js 15 + React 19 + Tailwind + shadcn/ui
-- **React Flow** for the connections / follow-the-money graph
-- TanStack Query against the AetherSeed API (`/v1/investigations`, `/graph`)
+```bash
+cd apps/web/frontend
+cp .env.local.example .env.local     # NEXT_PUBLIC_API_URL -> the API
+npm install
+npm run dev                          # http://localhost:3000
+```
 
-Scaffold it under `apps/web/` (a separate Node project) and consume:
+Start the API allowing that origin:
 
-- `POST /v1/investigations` to launch,
-- `GET /v1/investigations/{id}` to poll,
-- `GET /v1/investigations/{id}/graph?fmt=cytoscape` to render the graph,
-- `GET /v1/investigations/{id}/result` for leads + gap report.
+```bash
+AETHERSEED_CORS_ORIGINS=http://localhost:3000 uv run aetherseed serve
+```
 
-CORS origins are controlled by `AETHERSEED_CORS_ORIGINS`.
+It consumes `POST /v1/investigations`, polls `GET /v1/investigations/{id}`, and
+renders `GET /v1/investigations/{id}/graph` + `/result`. See
+[`frontend/README.md`](frontend/README.md).

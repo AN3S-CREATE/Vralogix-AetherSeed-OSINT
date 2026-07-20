@@ -59,6 +59,7 @@ class InvestigationRequest(BaseModel):
     screenshots: bool = False
     enrich: bool = False
     render: bool = False
+    search: bool = False
 
 
 class InvestigationAccepted(BaseModel):
@@ -93,6 +94,7 @@ async def start_investigation(req: InvestigationRequest) -> InvestigationAccepte
         screenshots=req.screenshots,
         enrich=req.enrich,
         render=req.render,
+        search=req.search,
     )
     return InvestigationAccepted(run_id=run_id, poll=f"/v1/investigations/{run_id}")
 

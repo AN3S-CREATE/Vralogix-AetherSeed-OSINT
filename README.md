@@ -71,6 +71,19 @@ uv run aetherseed investigate \
 Outputs a scored lead list, a gap report, and (to `--output`) `run.json`,
 `graph.graphml`, `graph.jsonld`, and `leads.json`.
 
+### Seed a crawl from a bare name (search)
+
+A subject with no URL/domain can still crawl if you enable a search backend:
+
+```bash
+export AETHERSEED_SEARCH_BACKEND=duckduckgo   # or searxng (+ AETHERSEED_SEARXNG_URL)
+uv run aetherseed investigate --subject "Example Mining Pty Ltd" --type company --search ...
+```
+
+Search is off by default (offline-first). Enrichment (`--enrich`) runs real
+WHOIS-over-RDAP for domains and, with `OPENCORPORATES_API_TOKEN` set, company
+registry lookups (incl. SA/CIPC data) that add directors as `director_of` edges.
+
 ### Optional local AI (recommended)
 
 ```bash

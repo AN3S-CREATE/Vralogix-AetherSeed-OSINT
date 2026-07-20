@@ -4,7 +4,22 @@ from __future__ import annotations
 
 import hashlib
 
+from aetherseed.core.acquisition.search import SearchResult
 from aetherseed.core.interfaces import FetchResult
+
+
+class FakeSearchProvider:
+    """A search provider returning canned URLs for any query."""
+
+    name = "fake"
+
+    def __init__(self, urls: list[str]) -> None:
+        self.urls = urls
+        self.queries: list[str] = []
+
+    async def search(self, query: str, *, max_results: int = 10) -> list[SearchResult]:
+        self.queries.append(query)
+        return [SearchResult(url=u) for u in self.urls[:max_results]]
 
 
 class FakeFetcher:

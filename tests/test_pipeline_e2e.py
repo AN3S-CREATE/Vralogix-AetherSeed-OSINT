@@ -6,7 +6,7 @@ from aetherseed.core.storage.audit import AuditLog
 from aetherseed.pipelines import InvestigationPipeline
 from aetherseed.schemas import Constraints, RunStatus, SubjectSeed, SubjectType
 
-from tests.fakes import FakeFetcher
+from tests.fakes import FakeFetcher, FakeSearchProvider
 
 PAGES = {
     "http://example.com/": "<h1>Root Co Pty Ltd</h1><a href='/about'>about</a>",
@@ -62,3 +62,24 @@ async def test_no_crawlable_subject_still_completes(env) -> None:
     result = await pipe.run(subject, auto_seed=True)
     assert result.status is RunStatus.SUCCEEDED  # graceful: no crawl, still a result
     assert result.gap_report is not None
+
+
+async def test_search_lets_bare_name_seed_a_crawl(env) -> None:
+    pages = {"http://found.example/": "<h1>Bare Company Pty Ltd</h1><p>ceo@found.example</p>"}
+    pipe = InvestigationPipeline(
+        env,
+        fetcher_factory=lambda respect_robots: FakeFetcher(pages),
+        search_provider=FakeSearchProvider(["http://found.example/"]),
+    )
+    subject = SubjectSeed(
+        subject_type=SubjectType.COMPANY,
+        primary_identifiers=["Some Bare Company"],  # not a URL/domain
+        constraints=Constraints(max_depth=0, max_pages=5, require_approval=False),
+    )
+    # Without search: nothing to crawl.
+    baseline = await pipe.run(subject)
+    assert baseline.metrics.pages_fetched == 0
+    # With search: the provider supplies a crawlable seed URL.
+    result = await pipe.run(subject, search=True)
+    assert result.metrics.pages_fetched >= 1
+    assert result.graph_delta.nodes

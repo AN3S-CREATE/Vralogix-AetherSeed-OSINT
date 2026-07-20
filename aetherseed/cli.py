@@ -98,6 +98,9 @@ def investigate(
     screenshots: Annotated[bool, typer.Option("--screenshots", help="Capture screenshots.")] = False,
     enrich: Annotated[bool, typer.Option("--enrich", help="Run enrichment pass.")] = False,
     render: Annotated[bool, typer.Option("--render", help="Use a JS-rendering browser.")] = False,
+    search: Annotated[
+        bool, typer.Option("--search", help="Discover seed URLs via web search (opt-in).")
+    ] = False,
     output: Annotated[
         Path | None, typer.Option("--output", "-o", help="Directory for run artifacts.")
     ] = None,
@@ -148,6 +151,7 @@ def investigate(
             take_screenshots=screenshots,
             enrich=enrich,
             render=render,
+            search=search,
         )
     )
 

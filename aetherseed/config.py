@@ -25,6 +25,7 @@ Environment = Literal["dev", "prod"]
 AIBackend = Literal["ollama", "openai", "anthropic", "null"]
 VectorBackend = Literal["chroma", "none"]
 GraphBackend = Literal["networkx", "neo4j"]
+SearchBackend = Literal["none", "duckduckgo", "searxng"]
 
 
 class Settings(BaseSettings):
@@ -39,6 +40,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        populate_by_name=True,  # allow constructing by field name even when aliased
     )
 
     # --- Core ---
@@ -60,6 +62,11 @@ class Settings(BaseSettings):
     acq_egress_allowlist: str = ""  # comma-separated hosts/CIDRs; empty => public only
     acq_proxy_url: str | None = None
 
+    # --- Search (seed discovery from bare names) ---
+    search_backend: SearchBackend = "none"  # opt-in; none => only URL/domain seeds
+    search_max_results: int = Field(default=10, ge=1, le=50)
+    searxng_url: str | None = None  # required when search_backend == "searxng"
+
     # --- AI (AetherMind) ---
     ai_backend: AIBackend = "ollama"
     ai_ollama_host: str = "http://localhost:11434"
@@ -74,6 +81,17 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("ANTHROPIC_API_KEY", "AETHERSEED_ANTHROPIC_API_KEY"),
     )
+
+    # --- Enrichment ---
+    # OpenCorporates powers the company-registry enricher (includes SA/CIPC data).
+    # Without a token the registry enricher reports "not_configured".
+    opencorporates_api_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "OPENCORPORATES_API_TOKEN", "AETHERSEED_OPENCORPORATES_API_TOKEN"
+        ),
+    )
+    rdap_base_url: str = "https://rdap.org"  # WHOIS-over-RDAP bootstrap
 
     # --- Vector store ---
     vector_backend: VectorBackend = "chroma"

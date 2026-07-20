@@ -35,6 +35,7 @@ from aetherseed.core.acquisition.browser import PlaywrightFetcher
 from aetherseed.core.acquisition.crawler import Crawler
 from aetherseed.core.acquisition.extract import HtmlExtractor
 from aetherseed.core.acquisition.fetcher import HttpxFetcher
+from aetherseed.core.acquisition.search import SearchProvider, get_search_provider
 from aetherseed.core.ai.engine import AetherMind
 from aetherseed.core.enrichment.enrichers import get_enrichers
 from aetherseed.core.graph.money import FollowTheMoney
@@ -100,6 +101,7 @@ class InvestigationPipeline:
         ai: AetherMind | None = None,
         progress: ProgressCb | None = None,
         fetcher_factory: Callable[..., Any] | None = None,
+        search_provider: SearchProvider | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.settings.ensure_dirs()
@@ -112,6 +114,7 @@ class InvestigationPipeline:
         self._fetcher_factory = fetcher_factory or (
             lambda respect_robots: HttpxFetcher(self.settings, respect_robots=respect_robots)
         )
+        self._search_provider = search_provider or get_search_provider(self.settings)
 
     async def run(
         self,
@@ -122,6 +125,7 @@ class InvestigationPipeline:
         take_screenshots: bool = False,
         enrich: bool = False,
         render: bool = False,
+        search: bool = False,
     ) -> InvestigationRun:
         """Execute the full investigation and return the structured result."""
         result = InvestigationRun(subject=subject)
@@ -145,7 +149,7 @@ class InvestigationPipeline:
 
                 await self._execute(subject, result, graph, audit, session,
                                     auto_seed=auto_seed, take_screenshots=take_screenshots,
-                                    enrich=enrich, render=render)
+                                    enrich=enrich, render=render, search=search)
                 session.commit()
         except Exception as exc:
             log.error("run.fatal", error=str(exc), tb=traceback.format_exc())
@@ -186,6 +190,7 @@ class InvestigationPipeline:
         take_screenshots: bool,
         enrich: bool,
         render: bool,
+        search: bool,
     ) -> None:
         constraints = subject.constraints
 
@@ -209,6 +214,10 @@ class InvestigationPipeline:
                 if (url := _looks_crawlable(ident)) is not None:
                     seed_urls.append(url)
         seed_urls = list(dict.fromkeys(seed_urls))
+
+        # --- 2b. Search-driven discovery (opt-in): let a bare name seed a crawl.
+        if search:
+            seed_urls = await self._discover_via_search(subject, expansion, seed_urls, audit)
 
         run_entities: dict[str, Entity] = {}
         run_relationships: list[Relationship] = []
@@ -277,6 +286,45 @@ class InvestigationPipeline:
             metrics=result.metrics.model_dump(mode="json"),
         )
         self._progress("run.finished", {"status": result.status.value})
+
+    async def _discover_via_search(
+        self,
+        subject: SubjectSeed,
+        expansion: Any,
+        seed_urls: list[str],
+        audit: AuditLog,
+        *,
+        max_queries: int = 6,
+    ) -> list[str]:
+        """Discover crawlable URLs by searching identifiers + top expansion queries.
+
+        Result URLs are added to the seed set (deduped, capped). They remain
+        subject to the crawler's SSRF/robots/rate controls when fetched.
+        """
+        provider = self._search_provider
+        if provider is None or provider.name == "none":
+            audit.emit("search.skipped", reason="no search backend configured")
+            return seed_urls
+
+        queries = list(dict.fromkeys([*subject.primary_identifiers, *expansion.search_queries]))
+        cap = min(subject.constraints.max_pages or 20, 20)
+        discovered: list[str] = []
+        for query in queries[:max_queries]:
+            for res in await provider.search(query, max_results=self.settings.search_max_results):
+                if res.url.startswith(("http://", "https://")):
+                    discovered.append(res.url)
+            if len(discovered) >= cap:
+                break
+
+        merged = list(dict.fromkeys([*seed_urls, *discovered]))[: max(cap, len(seed_urls))]
+        audit.emit(
+            "search.performed",
+            provider=provider.name,
+            queries=min(len(queries), max_queries),
+            discovered=len(set(discovered)),
+        )
+        self._progress("search.performed", {"discovered": len(set(discovered))})
+        return merged
 
     async def _crawl(
         self,
@@ -418,7 +466,7 @@ class InvestigationPipeline:
         run_entities: dict[str, Entity],
         run_relationships: list[Relationship],
     ) -> None:
-        enrichers: list[Enricher] = get_enrichers()
+        enrichers: list[Enricher] = get_enrichers(self.settings)
         targets = [e for e in list(run_entities.values())
                    if e.type in (EntityType.DOMAIN, EntityType.COMPANY)]
         for entity in targets[:50]:

@@ -41,6 +41,7 @@ class RunRegistry:
         screenshots: bool = False,
         enrich: bool = False,
         render: bool = False,
+        search: bool = False,
     ) -> str:
         """Launch an investigation in the background; return its run_id."""
         result = InvestigationRun(subject=subject)
@@ -57,6 +58,7 @@ class RunRegistry:
                     take_screenshots=screenshots,
                     enrich=enrich,
                     render=render,
+                    search=search,
                 )
                 self._results[run_id] = res
                 self._status[run_id] = res.status.value

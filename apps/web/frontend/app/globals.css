@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import "@xyflow/react/dist/style.css";
+
+html,
+body {
+  height: 100%;
+  background: #0b1020;
+  color: #e2e8f0;
+}

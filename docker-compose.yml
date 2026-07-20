@@ -1,0 +1,99 @@
+# =============================================================================
+# AetherSeed full stack. Local-first: works offline once Ollama has pulled a
+# model. Optional services (worker, postgres) are gated behind profiles so a
+# bare `docker compose up` brings the minimal, runnable stack (api + ollama).
+#
+#   docker compose up api ollama              # minimal
+#   docker compose --profile worker up        # + celery worker + redis
+#   docker compose --profile postgres up      # + postgres (prod DB)
+#   docker compose --profile full up          # everything
+# =============================================================================
+name: aetherseed
+
+x-app-env: &app-env
+  AETHERSEED_ENV: prod
+  AETHERSEED_LOG_JSON: "true"
+  AETHERSEED_DATA_DIR: /app/data
+  AETHERSEED_AI_OLLAMA_HOST: http://ollama:11434
+  AETHERSEED_REDIS_URL: redis://redis:6379/0
+  AETHERSEED_CORS_ORIGINS: http://localhost:3000
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      <<: *app-env
+      # Default to bundled SQLite; override for postgres profile below.
+      AETHERSEED_DATABASE_URL: ${AETHERSEED_DATABASE_URL:-sqlite+pysqlite:////app/data/aetherseed.sqlite3}
+    ports:
+      - "8000:8000"
+    volumes:
+      - aetherseed_data:/app/data
+    depends_on:
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+
+  worker:
+    profiles: ["worker", "full"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: celery -A aetherseed.apps.worker.tasks:celery_app worker --loglevel=info --concurrency=2
+    environment:
+      <<: *app-env
+      AETHERSEED_DATABASE_URL: ${AETHERSEED_DATABASE_URL:-sqlite+pysqlite:////app/data/aetherseed.sqlite3}
+    volumes:
+      - aetherseed_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["worker", "full"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres", "full"]
+    environment:
+      POSTGRES_USER: aetherseed
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aetherseed}
+      POSTGRES_DB: aetherseed
+    ports:
+      - "5432:5432"
+    volumes:
+      - aetherseed_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aetherseed"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    restart: unless-stopped
+    # After first start, pull a model, e.g.:
+    #   docker compose exec ollama ollama pull llama3.1
+    #   docker compose exec ollama ollama pull nomic-embed-text
+
+volumes:
+  aetherseed_data:
+  aetherseed_pg:
+  ollama_models:

@@ -1,0 +1,32 @@
+# AetherSeed auto-seeding rules.
+#
+# Each rule turns a discovered entity of `entity_type` into a new seed of
+# `subject_type`, gated by `min_confidence`. `blacklist` terms suppress noisy
+# hosts/names. This file (config/seed_rules.yaml) overrides the built-in
+# defaults; delete it to fall back to them. See aetherseed/core/seeding/rules.py.
+- name: company_entity
+  entity_type: company
+  subject_type: company
+  min_confidence: 0.55
+  priority: 0.7
+  max_per_run: 20
+
+- name: person_entity
+  entity_type: person
+  subject_type: person
+  min_confidence: 0.6
+  priority: 0.6
+  max_per_run: 20
+
+- name: domain_entity
+  entity_type: domain
+  subject_type: domain
+  min_confidence: 0.5
+  priority: 0.65
+  max_per_run: 30
+  blacklist:
+    - google.com
+    - facebook.com
+    - twitter.com
+    - linkedin.com
+    - youtube.com

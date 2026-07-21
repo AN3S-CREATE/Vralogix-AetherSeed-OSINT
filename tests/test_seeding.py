@@ -77,3 +77,29 @@ def test_human_approval_flow(env) -> None:
         assert eng.approve(s, audit, run.run_id, seed_id) is True
         rec = SeedRepository(s).get(seed_id)
     assert rec is not None and rec.status == SeedStatus.APPROVED.value
+
+
+def test_reject_pending_seed(env) -> None:
+    subj, run, entities = _setup_run(env)
+    audit = AuditLog(run.run_id, env)
+    with session_scope() as s:
+        eng = SeedingEngine(SafetyBudget(env, require_approval=True))
+        outcome = eng.propose(run.run_id, subj, entities, s, audit, max_new=10)
+        seed_id = outcome.created_seed_ids[0]
+        assert eng.reject(s, audit, run.run_id, seed_id) is True
+        rec = SeedRepository(s).get(seed_id)
+    assert rec is not None and rec.status == SeedStatus.REJECTED.value
+
+
+def test_reject_non_pending_seed_is_noop(env) -> None:
+    """Only PENDING seeds are actionable — mirror approve() gate semantics."""
+    subj, run, entities = _setup_run(env)
+    audit = AuditLog(run.run_id, env)
+    with session_scope() as s:
+        eng = SeedingEngine(SafetyBudget(env, require_approval=True))
+        outcome = eng.propose(run.run_id, subj, entities, s, audit, max_new=10)
+        seed_id = outcome.created_seed_ids[0]
+        assert eng.approve(s, audit, run.run_id, seed_id) is True
+        assert eng.reject(s, audit, run.run_id, seed_id) is False
+        rec = SeedRepository(s).get(seed_id)
+    assert rec is not None and rec.status == SeedStatus.APPROVED.value

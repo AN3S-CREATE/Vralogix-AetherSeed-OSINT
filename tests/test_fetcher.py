@@ -50,3 +50,20 @@ async def test_404_is_not_ok_but_not_error(_no_ssrf: None) -> None:
     res = await f.fetch("http://example.com/missing")
     await f.aclose()
     assert res.ok is False and res.status_code == 404
+
+
+@respx.mock
+async def test_exhausted_retries_does_not_double_release(_no_ssrf: None) -> None:
+    """Retry budget exhaustion must not release the rate limiter twice."""
+    respx.get("http://example.com/").mock(return_value=httpx.Response(503))
+    f = HttpxFetcher(
+        Settings(acq_respect_robots=False, acq_polite_delay_ms=0, acq_max_concurrency=1),
+        max_attempts=2,
+    )
+    # Two exhausted fetches would crash with "Semaphore released too many times"
+    # if fetch()'s finally also released after _fetch_with_retry already did.
+    for _ in range(2):
+        res = await f.fetch("http://example.com/")
+        assert res.ok is False
+        assert res.error is not None
+    await f.aclose()

@@ -82,15 +82,13 @@ class HttpxFetcher:
 
         try:
             resp = await self._fetch_with_retry(url, host)
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, _RetryableStatusError) as exc:
             return self._failure(
                 url,
                 started,
                 FetchError(str(exc), context={"url": url, "exc": type(exc).__name__}),
                 status=0,
             )
-        finally:
-            self._limiter.release()
 
         content = resp.content
         return FetchResult(
@@ -107,6 +105,9 @@ class HttpxFetcher:
         )
 
     async def _fetch_with_retry(self, url: str, host: str) -> httpx.Response:
+        # Acquire/release are paired inside each attempt so the concurrency slot
+        # is freed during backoff. Do not also release in fetch() — that double-
+        # frees the semaphore when retries are exhausted.
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(self._max_attempts),
             wait=wait_exponential_jitter(initial=0.5, max=10.0),
@@ -123,6 +124,7 @@ class HttpxFetcher:
                 if resp.status_code in _RETRYABLE_STATUS:
                     self._limiter.release()
                     raise _RetryableStatusError(resp.status_code)
+                self._limiter.release()
                 return resp
         raise FetchError("unreachable", context={"url": url})  # pragma: no cover
 

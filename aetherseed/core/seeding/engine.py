@@ -222,7 +222,7 @@ class SeedingEngine:
         """Reject a pending seed. Returns success."""
         seed_repo = SeedRepository(session)
         rec = seed_repo.get(seed_id)
-        if rec is None:
+        if rec is None or rec.status != SeedStatus.PENDING.value:
             return False
         seed_repo.set_status(seed_id, SeedStatus.REJECTED)
         SeedDecisionRepository(session).record(

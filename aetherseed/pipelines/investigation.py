@@ -42,6 +42,7 @@ from aetherseed.core.graph.money import FollowTheMoney
 from aetherseed.core.graph.resolution import canonical_key
 from aetherseed.core.graph.store import NetworkXGraphStore
 from aetherseed.core.interfaces import Enricher
+from aetherseed.core.rag.index import get_vector_index
 from aetherseed.core.seeding.budget import SafetyBudget
 from aetherseed.core.seeding.engine import SeedingEngine
 from aetherseed.core.storage.asset_store import FilesystemAssetStore
@@ -62,6 +63,7 @@ from aetherseed.schemas import (
     AssetManifest,
     Entity,
     EntityType,
+    EvidenceSnippet,
     GraphDelta,
     InvestigationRun,
     Lead,
@@ -102,6 +104,7 @@ class InvestigationPipeline:
         progress: ProgressCb | None = None,
         fetcher_factory: Callable[..., Any] | None = None,
         search_provider: SearchProvider | None = None,
+        vector_index_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.settings.ensure_dirs()
@@ -115,6 +118,11 @@ class InvestigationPipeline:
             lambda respect_robots: HttpxFetcher(self.settings, respect_robots=respect_robots)
         )
         self._search_provider = search_provider or get_search_provider(self.settings)
+        # Per-run corpus index (RAG). Default degrades to an offline in-memory
+        # lexical index; a factory is injectable for tests / alternative backends.
+        self._vector_index_factory = vector_index_factory or (
+            lambda: get_vector_index(self.settings)
+        )
 
     async def run(
         self,
@@ -221,12 +229,15 @@ class InvestigationPipeline:
 
         run_entities: dict[str, Entity] = {}
         run_relationships: list[Relationship] = []
+        # Per-run RAG corpus: page texts collected during the crawl, later used
+        # to ground leads with retrieved evidence snippets.
+        corpus = self._vector_index_factory()
 
         # --- 3. Crawl ---------------------------------------------------------
         if seed_urls and constraints.max_pages > 0:
             await self._crawl(
                 subject, result, graph, audit, session, seed_urls,
-                run_entities, run_relationships, render=render,
+                run_entities, run_relationships, corpus, render=render,
                 take_screenshots=take_screenshots,
             )
         else:
@@ -246,6 +257,7 @@ class InvestigationPipeline:
         leads = self._build_leads(subject, expansion, graph, money, run_entities)
         leads = await self.ai.score_leads(subject, leads)
         result.new_leads = sorted(leads, key=lambda x: x.score, reverse=True)
+        self._attach_evidence(result.new_leads, corpus, audit)
 
         # --- 7. Gap analysis --------------------------------------------------
         gap = await self.ai.analyze_gaps(
@@ -276,6 +288,7 @@ class InvestigationPipeline:
         result.graph_delta = GraphDelta(
             nodes=list(run_entities.values()), edges=run_relationships
         )
+        self._persist_graph(result.graph_delta, audit)
         result.asset_manifest = self._collect_assets(session, result.run_id)
         result.metrics.pending = self._count_pending_seeds(session, result.run_id)
         self._finalize_status(result)
@@ -336,6 +349,7 @@ class InvestigationPipeline:
         seed_urls: list[str],
         run_entities: dict[str, Entity],
         run_relationships: list[Relationship],
+        corpus: Any,
         *,
         render: bool,
         take_screenshots: bool,
@@ -392,6 +406,7 @@ class InvestigationPipeline:
                         depth=outcome.depth, rendered=outcome.result.rendered,
                     )
                     await self._ingest_page(outcome, graph, run_entities, run_relationships)
+                    self._index_page(corpus, outcome)
                     audit.emit(
                         "page.fetched", url=outcome.url,
                         entities=len(outcome.content.entities), depth=outcome.depth,
@@ -437,6 +452,75 @@ class InvestigationPipeline:
             run_entities.setdefault(canonical_key(ent), ent)
         run_relationships.extend(relationships)
         graph.apply_delta(GraphDelta(nodes=entities, edges=relationships))
+
+    @staticmethod
+    def _index_page(corpus: Any, outcome: Any) -> None:
+        """Add a fetched page's text to the run's RAG corpus (best-effort)."""
+        text = (outcome.content.text or "").strip()
+        if not text:
+            return
+        try:
+            corpus.add(
+                [outcome.url],
+                [text],
+                [{"url": outcome.result.final_url, "title": outcome.content.title or ""}],
+            )
+        except Exception as exc:  # indexing must never abort a run
+            log.debug("rag.index_failed", url=outcome.url, error=str(exc))
+
+    def _attach_evidence(self, leads: list[Lead], corpus: Any, audit: AuditLog) -> None:
+        """Ground each lead with top retrieved snippets from the corpus.
+
+        Non-fatal: any retrieval failure is logged and leaves the lead unchanged,
+        preserving the run. No-op when RAG is disabled or the corpus is empty.
+        """
+        k = self.settings.rag_snippets_per_lead
+        if not self.settings.rag_enabled or k <= 0 or len(corpus) == 0:
+            return
+        attached = 0
+        for lead in leads:
+            query = " ".join(p for p in (lead.title, lead.value, lead.summary) if p).strip()
+            if not query:
+                continue
+            try:
+                hits = corpus.query(query, k=k)
+            except Exception as exc:
+                log.debug("rag.query_failed", lead=lead.id, error=str(exc))
+                continue
+            snippets = [
+                EvidenceSnippet(
+                    text=h["snippet"], source_url=h.get("metadata", {}).get("url"), score=h["score"]
+                )
+                for h in hits
+                if h.get("score", 0.0) >= self.settings.rag_min_score
+            ]
+            if snippets:
+                lead.evidence = snippets
+                attached += 1
+        if attached:
+            audit.emit("rag.evidence_attached", leads=attached, corpus_size=len(corpus))
+
+    def _persist_graph(self, delta: GraphDelta, audit: AuditLog) -> None:
+        """Mirror the run's graph delta into Neo4j when that backend is selected.
+
+        Best-effort durable persistence: the in-memory NetworkX store remains the
+        source of truth for in-run analysis. Any failure degrades silently (logged)
+        so an unreachable database never fails an otherwise-successful run.
+        """
+        if self.settings.graph_backend != "neo4j" or delta.is_empty():
+            return
+        try:
+            from aetherseed.core.graph.neo4j_store import Neo4jGraphStore
+
+            store = Neo4jGraphStore(self.settings)
+            try:
+                store.apply_delta(delta)
+                audit.emit("graph.persisted", backend="neo4j",
+                           nodes=len(delta.nodes), edges=len(delta.edges))
+            finally:
+                store.close()
+        except Exception as exc:  # never fail the run for a persistence miss
+            log.warning("graph.neo4j_persist_failed", error=str(exc))
 
     async def _maybe_screenshot(
         self, shotter: PlaywrightFetcher, url: str, session: Any, result: InvestigationRun

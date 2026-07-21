@@ -25,6 +25,9 @@ and legal workflows.
   checkpointed watermarks, exponential-backoff retries for transient errors.
 - **Auditable.** Every run has a hash-chained, tamper-evident audit log; every
   fact carries provenance.
+- **Grounded.** Leads are backed by evidence snippets retrieved (hybrid BM25 +
+  optional embeddings, fused with RRF) from the exact pages crawled — traceable,
+  not a black box. Works offline; no vector DB required.
 - **Safe by default.** SSRF egress guard, robots.txt compliance, rate limiting,
   content-type/size validation, and safety budgets on auto-seeding.
 
@@ -83,6 +86,17 @@ uv run aetherseed investigate --subject "Example Mining Pty Ltd" --type company 
 Search is off by default (offline-first). Enrichment (`--enrich`) runs real
 WHOIS-over-RDAP for domains and, with `OPENCORPORATES_API_TOKEN` set, company
 registry lookups (incl. SA/CIPC data) that add directors as `director_of` edges.
+
+### Evidence-grounded leads (RAG)
+
+Every crawled page is indexed into a per-run corpus, and each lead is annotated
+with the top supporting snippets (source URL + score) so findings trace back to
+the exact text. The default `memory` backend is a zero-dependency lexical index
+(BM25 + Reciprocal Rank Fusion) that runs fully offline. Set
+`AETHERSEED_VECTOR_BACKEND=chroma` (with the `ai` extra) for dense embeddings, or
+`AETHERSEED_RAG_ENABLED=false` to turn grounding off. Follow-the-money now also
+emits a **timeline** and **geo** view; set `AETHERSEED_GRAPH_BACKEND=neo4j` to
+mirror the resolved graph into a durable Neo4j store.
 
 ### Optional local AI (recommended)
 
@@ -171,7 +185,7 @@ structured envelope with `category` (transient / permanent / policy) and a
 ## Development
 
 ```bash
-uv run pytest                       # 72 tests, fully offline
+uv run pytest                       # 120 tests, fully offline
 uv run pytest --cov=aetherseed      # with coverage
 uv run ruff check aetherseed tests  # lint
 uv run mypy aetherseed              # strict type-check

@@ -21,7 +21,8 @@ aetherseed/
 │   │                    #   crawler(priority frontier, fault isolation)
 │   ├── ai/              # backend(Ollama/Anthropic/Null) · prompts · schemas ·
 │   │                    #   engine(AetherMind: expand/extract/score/gaps)
-│   ├── graph/           # store(NetworkX) · resolution(rapidfuzz) · money
+│   ├── rag/             # retrieval(BM25+dense+RRF) · index(memory/chroma/null)
+│   ├── graph/           # store(NetworkX) · factory(→neo4j) · resolution · money
 │   ├── seeding/         # rules · budget · engine (auto-seed under HITL gate)
 │   ├── enrichment/      # DnsEnricher (+ WHOIS/registry stubs)
 │   └── storage/         # models · db · repositories · asset_store · audit
@@ -52,10 +53,18 @@ aetherseed/
 
 3. **Graph & follow-the-money** — `NetworkXGraphStore` runs entity resolution
    (deterministic canonical keys + `rapidfuzz` fuzzy merge) on every insert.
-   Exports to node-link / Cytoscape / JSON-LD / GraphML. `FollowTheMoney`
+   Exports to node-link / Cytoscape / JSON-LD / GraphML. `get_graph_store`
+   selects the backend (NetworkX by default; a durable `Neo4jGraphStore` behind
+   the same Protocol when configured, degrading if unreachable). `FollowTheMoney`
    surfaces ownership/control chains, shared-director networks, payment flows,
-   and heuristic red flags (circular ownership, central intermediaries,
-   shell-like nodes, director hubs).
+   a chronological **timeline**, **geo** points, and heuristic red flags
+   (circular ownership, central intermediaries, shell-like nodes, director hubs)
+   — with centrality computed once per analysis.
+
+   **RAG grounding** — `core/rag` indexes each crawled page into a per-run
+   corpus (`HybridRetriever`: BM25 + optional dense, fused with RRF) and attaches
+   the top supporting snippets to every lead as auditable `EvidenceSnippet`s.
+   Offline by default (`memory` backend); `chroma` is a dense-embedding upgrade.
 
 4. **Automated seeding** — `SeedingEngine` combines rule-based candidates
    (`rules.py`, YAML-overridable), LLM proposals, and gap actions. Each candidate

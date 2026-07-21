@@ -187,6 +187,25 @@ class GraphDelta(_Base):
 # --- Leads, gaps, actions ----------------------------------------------------
 
 
+class EvidenceSnippet(_Base):
+    """A supporting passage retrieved from the collected corpus for a lead.
+
+    Produced by the hybrid RAG retriever (:mod:`aetherseed.core.rag`). Each
+    snippet is grounded — it carries the source URL and the retrieval score so an
+    investigator can trace *why* a lead was surfaced back to the exact page text.
+
+    Examples
+    --------
+    >>> EvidenceSnippet(text="ACME Ltd is owned by...", source_url="https://x/",
+    ...                 score=0.82).score
+    0.82
+    """
+
+    text: str = Field(max_length=1000)
+    source_url: str | None = None
+    score: float = Field(default=0.0, ge=0.0)
+
+
 class Lead(_Base):
     """A scored, actionable finding worth pursuing."""
 
@@ -200,6 +219,7 @@ class Lead(_Base):
     novelty: float = Field(default=0.5, ge=0.0, le=1.0)
     risk: float = Field(default=0.0, ge=0.0, le=1.0)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    evidence: list[EvidenceSnippet] = Field(default_factory=list)
     provenance: list[Provenance] = Field(default_factory=list)
 
     @property

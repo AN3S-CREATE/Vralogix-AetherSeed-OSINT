@@ -23,7 +23,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["dev", "prod"]
 AIBackend = Literal["ollama", "openai", "anthropic", "null"]
-VectorBackend = Literal["chroma", "none"]
+VectorBackend = Literal["memory", "chroma", "none"]
 GraphBackend = Literal["networkx", "neo4j"]
 SearchBackend = Literal["none", "duckduckgo", "searxng"]
 
@@ -93,9 +93,15 @@ class Settings(BaseSettings):
     )
     rdap_base_url: str = "https://rdap.org"  # WHOIS-over-RDAP bootstrap
 
-    # --- Vector store ---
-    vector_backend: VectorBackend = "chroma"
+    # --- Vector store / RAG ---
+    # "memory" (default) is a zero-dependency in-process lexical index that works
+    # fully offline; "chroma" adds dense embeddings (needs the `ai` extra);
+    # "none" disables corpus retrieval entirely.
+    vector_backend: VectorBackend = "memory"
     vector_dir: Path = Path("./data/chroma")
+    rag_enabled: bool = True  # attach retrieved evidence snippets to leads
+    rag_snippets_per_lead: int = Field(default=2, ge=0, le=10)
+    rag_min_score: float = Field(default=0.0, ge=0.0)  # drop snippets below this
 
     # --- Seeding safety budgets ---
     seed_max_new_per_hour: int = Field(default=100, ge=0)

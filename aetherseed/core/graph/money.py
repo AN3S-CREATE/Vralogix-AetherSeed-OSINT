@@ -18,15 +18,44 @@ leads for a human to verify, and every claim is traceable to its provenance.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import networkx as nx
+from dateutil import parser as _dateparser
 
 from aetherseed.core.graph.store import NetworkXGraphStore
 from aetherseed.schemas import EntityType, RelationType
 
 _CONTROL_RELS = {RelationType.OWNS.value, RelationType.CONTROLS.value, RelationType.DIRECTOR_OF.value}
 _MONEY_RELS = {RelationType.PAID.value}
+
+# Attribute keys that plausibly carry a date/timestamp, in priority order.
+_DATE_KEYS = (
+    "date", "timestamp", "occurred_at", "filed_at", "registered_at",
+    "registered", "incorporated", "incorporation_date", "founded",
+)
+_LAT_KEYS = ("lat", "latitude")
+_LON_KEYS = ("lon", "lng", "longitude")
+
+
+def _parse_date(value: Any) -> datetime | None:
+    """Best-effort parse of a value into a datetime; ``None`` if not date-like."""
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return _dateparser.parse(value)
+    except (ValueError, OverflowError, TypeError):
+        return None
+
+
+def _parse_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(slots=True)
@@ -55,6 +84,8 @@ class MoneyReport:
     shared_directors: list[dict[str, Any]] = field(default_factory=list)
     payment_flows: list[dict[str, Any]] = field(default_factory=list)
     red_flags: list[RedFlag] = field(default_factory=list)
+    timeline: list[dict[str, Any]] = field(default_factory=list)
+    geo: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +105,8 @@ class MoneyReport:
                 }
                 for f in sorted(self.red_flags, key=lambda x: x.severity, reverse=True)
             ],
+            "timeline": self.timeline,
+            "geo": self.geo,
         }
 
 
@@ -83,17 +116,32 @@ class FollowTheMoney:
     def __init__(self, store: NetworkXGraphStore) -> None:
         self.store = store
         self.g = store.graph
+        # Per-analyser caches: the underlying graph is treated as immutable for
+        # the analyser's lifetime, so expensive derived structures are built once.
+        self._ctrl: nx.DiGraph | None = None
+        self._betw: dict[str, float] | None = None
 
     def _label(self, node_id: str) -> str:
         ent = self.store.get_entity(node_id)
         return ent.label if ent else node_id
 
     def _control_subgraph(self) -> nx.DiGraph:
-        h = nx.DiGraph()
-        for u, v, data in self.g.edges(data=True):
-            if data.get("type") in _CONTROL_RELS:
-                h.add_edge(u, v, type=data.get("type"))
-        return h
+        if self._ctrl is None:
+            h = nx.DiGraph()
+            for u, v, data in self.g.edges(data=True):
+                if data.get("type") in _CONTROL_RELS:
+                    h.add_edge(u, v, type=data.get("type"))
+            self._ctrl = h
+        return self._ctrl
+
+    def _betweenness(self) -> dict[str, float]:
+        """Betweenness centrality over the undirected graph (cached)."""
+        if self._betw is None:
+            if self.g.number_of_nodes() < 3:
+                self._betw = {}
+            else:
+                self._betw = nx.betweenness_centrality(self.g.to_undirected(as_view=True))
+        return self._betw
 
     def ownership_chains(self, *, max_depth: int = 6) -> list[OwnershipChain]:
         """All control chains (roots -> leaves) in the ownership/control subgraph."""
@@ -181,7 +229,7 @@ class FollowTheMoney:
 
         # 2. Highly central intermediaries (potential conduits).
         if self.g.number_of_nodes() >= 3:
-            betw = nx.betweenness_centrality(self.g.to_undirected(as_view=True))
+            betw = self._betweenness()
             threshold = 0.25
             for nid, score in betw.items():
                 if score >= threshold:
@@ -229,6 +277,62 @@ class FollowTheMoney:
                 )
         return flags
 
+    def timeline(self) -> list[dict[str, Any]]:
+        """A chronological view of dated entities (transactions, filings, events).
+
+        Scans every entity for a date-like attribute (see ``_DATE_KEYS``) and, for
+        transactions, surfaces the movement. Returns events sorted oldest-first;
+        entries with no parseable date are omitted. This powers timeline
+        visualisations and temporal-pattern review without requiring a model.
+        """
+        events: list[tuple[datetime, dict[str, Any]]] = []
+        for nid in self.g.nodes:
+            ent = self.store.get_entity(nid)
+            if ent is None:
+                continue
+            when: datetime | None = None
+            for key in _DATE_KEYS:
+                if key in ent.attributes and (when := _parse_date(ent.attributes[key])) is not None:
+                    break
+            if when is None:
+                continue
+            events.append(
+                (
+                    when,
+                    {
+                        "date": when.isoformat(),
+                        "entity_id": nid,
+                        "label": ent.label,
+                        "kind": ent.type.value,
+                        "amount": ent.attributes.get("amount"),
+                    },
+                )
+            )
+        events.sort(key=lambda e: (e[0], e[1]["label"]))
+        return [payload for _, payload in events]
+
+    def geo_points(self) -> list[dict[str, Any]]:
+        """Entities carrying coordinates, for map overlays (empty if none)."""
+        points: list[dict[str, Any]] = []
+        for nid in self.g.nodes:
+            ent = self.store.get_entity(nid)
+            if ent is None:
+                continue
+            lat = next((_parse_float(ent.attributes[k]) for k in _LAT_KEYS if k in ent.attributes), None)
+            lon = next((_parse_float(ent.attributes[k]) for k in _LON_KEYS if k in ent.attributes), None)
+            if lat is None or lon is None:
+                continue
+            points.append(
+                {
+                    "entity_id": nid,
+                    "label": ent.label,
+                    "kind": ent.type.value,
+                    "lat": lat,
+                    "lon": lon,
+                }
+            )
+        return points
+
     def analyze(self, *, max_depth: int = 6) -> MoneyReport:
         """Run the full follow-the-money analysis."""
         return MoneyReport(
@@ -236,4 +340,6 @@ class FollowTheMoney:
             shared_directors=self.shared_directors(),
             payment_flows=self.payment_flows(),
             red_flags=self.red_flags(),
+            timeline=self.timeline(),
+            geo=self.geo_points(),
         )
